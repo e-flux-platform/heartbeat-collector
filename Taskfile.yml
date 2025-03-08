@@ -1,0 +1,67 @@
+version: "3"
+
+dotenv: [".env"]
+
+tasks:
+  lint:
+    desc: "Run Go linters"
+    cmds:
+      - cmd: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          golangci-lint run --out-format=colored-line-number
+
+  lint-fix:
+    desc: "Fix linting issues using gofumpt"
+    cmds:
+      - cmd: gofumpt -w .
+
+  install:
+    run: once
+    desc: "Install dependencies"
+    cmds:
+      - cmd: go mod download
+
+  test:
+    desc: "Run Go tests"
+    cmds:
+      - cmd: go test ./...
+
+  test-short:
+    desc: "Run Go tests in short mode"
+    cmds:
+      - cmd: go test --short ./...
+
+  pre-build:
+    desc: "Run tests and linting before building"
+    deps:
+      - install
+      - lint
+      - test-short
+
+  build:
+    desc: "Build the Go application"
+    cmds:
+      - cmd: go build -o heartbeat_collector .
+
+  local-image-build:
+    desc: "Build docker image locally"
+    cmds:
+      - cmd: docker buildx build -f Dockerfile --build-arg GH_TOKEN ./
+
+  local-image-run:
+    desc: "Run docker container"
+    env:
+      SQLITE_DSN: ${SQLITE_DSN}
+    cmds:
+      - cmd: |
+          docker run -d \
+            --name heartbeat-collector \
+            -p 8080:8080 \
+            -p 8081:8081 \
+            -v {{.SQLITE_DSN}}:/app/{{.SQLITE_DSN}} \
+            heartbeat-collector:latest
+
+  watch:
+    desc: "Run the application with live reloading"
+    cmds:
+      - cmd: nodemon --watch . --exec go run main.go --signal SIGINT
