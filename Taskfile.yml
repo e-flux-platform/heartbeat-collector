@@ -61,6 +61,11 @@ tasks:
             -v {{.SQLITE_DSN}}:/app/{{.SQLITE_DSN}} \
             heartbeat-collector:latest
 
+  run:
+    desc: "Run the application"
+    cmds:
+      - cmd: go run main.go
+
   watch:
     desc: "Run the application with live reloading"
     cmds:
