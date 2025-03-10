@@ -1,10 +1,11 @@
 module github.com/e-flux-platform/heartbeat-collector
 
-go 1.23
+go 1.24.1
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/urfave/cli/v2 v2.27.6
+	golang.org/x/sync v0.12.0
 )
 
 require (

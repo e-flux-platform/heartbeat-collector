@@ -1,21 +1,24 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
-	"sync"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 type AppConfig struct {
-	EnvName      string
 	AppName      string
 	InternalAddr string
 	ExternalAddr string
@@ -23,7 +26,7 @@ type AppConfig struct {
 }
 
 type Heartbeat struct {
-	Secret   string            `json:"secret"`
+	ID       string            `json:"id"`
 	Expiry   time.Time         `json:"expiry"`
 	Label    string            `json:"label,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -42,28 +45,25 @@ func main() {
 		Usage: "A service to collect and monitor heartbeats",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:        "environment-name",
-				Usage:       "Application Environment",
-				EnvVars:     []string{"ENV_NAME"},
-				Destination: &cf.EnvName,
-			},
-			&cli.StringFlag{
-				Name:        "internal-port",
+				Name:        "internal-addr",
 				Usage:       "Port for internal POST endpoints",
 				EnvVars:     []string{"INTERNAL_ADDR"},
 				Destination: &cf.InternalAddr,
+				Value:       ":8181",
 			},
 			&cli.StringFlag{
 				Name:        "external-port",
 				Usage:       "Port for external GET endpoints",
 				EnvVars:     []string{"EXTERNAL_ADDR"},
 				Destination: &cf.ExternalAddr,
+				Value:       ":8080",
 			},
 			&cli.StringFlag{
 				Name:        "db-path",
 				Usage:       "Path to the SQLite database file",
 				EnvVars:     []string{"SQLITE_DSN"},
 				Destination: &cf.SQLiteDSN,
+				Value:       "/tmp/heartbeats.db",
 			},
 		},
 		Action: run,
@@ -73,17 +73,24 @@ func main() {
 	}
 }
 
-func run(ctx *cli.Context) error {
+func run(cliCtx *cli.Context) error {
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	var err error
 	db, err = sql.Open("sqlite3", cf.SQLiteDSN)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+		log.Printf("closed DB at %s\n", cf.SQLiteDSN)
+	}()
 
 	_, err = db.Exec(`
         CREATE TABLE IF NOT EXISTS heartbeats (
-            secret TEXT PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             expiry DATETIME NOT NULL,
             label TEXT,
             metadata TEXT
@@ -93,127 +100,169 @@ func run(ctx *cli.Context) error {
 		return fmt.Errorf("failed to create table: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	log.Printf("DB opened at %s\n", cf.SQLiteDSN)
 
-	go func() {
-		defer wg.Done()
+	ctx, exitApp := context.WithCancel(cliCtx.Context)
+	defer exitApp()
+
+	g, groupCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
 		internalServer := &http.Server{
 			Addr:    cf.InternalAddr,
 			Handler: internalRouter(),
 		}
-		log.Printf("Internal server listening on %s\n", cf.InternalAddr)
-		if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Internal server error: %v", err)
-		}
-	}()
 
-	go func() {
-		defer wg.Done()
+		go func() {
+			<-groupCtx.Done()
+			if err := internalServer.Shutdown(context.Background()); err != nil {
+				log.Printf("failed to shutdown internal server: %v", err)
+			} else {
+				log.Println("internal server shutdown")
+			}
+
+		}()
+
+		log.Printf("internal server starting on %s\n", cf.InternalAddr)
+		if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("internal server error: %v", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
 		externalServer := &http.Server{
 			Addr:    cf.ExternalAddr,
 			Handler: externalRouter(),
 		}
-		log.Printf("External server listening on %s\n", cf.ExternalAddr)
+		go func() {
+			<-groupCtx.Done()
+			if err := externalServer.Shutdown(context.Background()); err != nil {
+				log.Printf("failed to shutdown internal server: %v", err)
+			} else {
+				log.Println("external server shutdown")
+			}
+		}()
+		log.Printf("external server starting on %s\n", cf.ExternalAddr)
 		if err := externalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("External server error: %v", err)
+			return fmt.Errorf("external server error: %v", err)
 		}
-	}()
+		return nil
+	})
 
-	wg.Wait()
-	log.Println("All servers stopped")
+	g.Go(func() error {
+		signalChannel := make(chan os.Signal, 1)
+		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
-	return nil
+		log.Println("starting signal listener")
+
+		select {
+		case sig := <-signalChannel:
+			log.Printf("received sig-%s, exiting\n", sig)
+			exitApp()
+		case <-groupCtx.Done():
+			log.Println("ending signal listener, main context done")
+			return groupCtx.Err()
+		}
+
+		return nil
+	})
+
+	err = g.Wait()
+	return err
 }
 
 func internalRouter() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /hb/{secret}", handlePutHeartbeat)
+	mux.HandleFunc("PUT /hb/{id}", handlePutHeartbeat)
 	return mux
 }
 
 func externalRouter() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hb/{secret}", handleGetHeartbeat)
+	mux.HandleFunc("GET /hb/{id}", handleGetHeartbeat)
 	return mux
 }
 
 func handlePutHeartbeat(w http.ResponseWriter, r *http.Request) {
+
+	hbID := r.PathValue("id")
+
 	var hb Heartbeat
 	if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		log.Println(err)
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if hb.Secret == "" {
-		http.Error(w, "Secret value is required", http.StatusBadRequest)
+	if hbID == "" {
+		http.Error(w, "ID value is required on path", http.StatusBadRequest)
 		return
 	}
 	if hb.Expiry.IsZero() {
-		http.Error(w, "Expiry date is required and must be RFC3339 compliant", http.StatusBadRequest)
+		http.Error(w, "'expiry' is required and must be RFC3339 compliant", http.StatusBadRequest)
 		return
 	}
 
 	metadataJSON, err := json.Marshal(hb.Metadata)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to encode metadata: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to encode metadata: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	hb.ID = hbID
 
 	_, err = db.Exec(`
-       INSERT OR REPLACE INTO heartbeats (secret, expiry, label, metadata)
+       INSERT OR REPLACE INTO heartbeats (id, expiry, label, metadata)
         VALUES (?, ?, ?, ?);
-    `, hb.Secret, hb.Expiry.Format(time.RFC3339), hb.Label, string(metadataJSON))
+    `, hb.ID, hb.Expiry.Format(time.RFC3339), hb.Label, string(metadataJSON))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to store heartbeat: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to store heartbeat: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte("Heartbeat registered")); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
-	secret := r.PathValue("secret")
-	if secret == "" {
-		http.Error(w, "Secret value is required", http.StatusBadRequest)
+	hbID := r.PathValue("id")
+	if hbID == "" {
+		http.Error(w, "ID value is required", http.StatusBadRequest)
 		return
 	}
 
 	var expiryStr, label, metadataJSON string
 	err := db.QueryRow(`
-        SELECT expiry, label, metadata FROM heartbeats WHERE secret = ?
-    `, secret).Scan(&expiryStr, &label, &metadataJSON)
+        SELECT expiry, label, metadata FROM heartbeats WHERE id = ?
+    `, hbID).Scan(&expiryStr, &label, &metadataJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "Heartbeat not found", http.StatusNotFound)
+			http.Error(w, "heartbeat not found", http.StatusNotFound)
 		} else {
-			http.Error(w, fmt.Sprintf("Failed to query heartbeat: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to query heartbeat: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
 
 	expiry, err := time.Parse(time.RFC3339, expiryStr)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse expiry date: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to parse expiry date: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	if time.Now().After(expiry) {
-		http.Error(w, "Heartbeat expired", http.StatusNotFound)
+		http.Error(w, "heartbeat expired", http.StatusNotFound)
 		return
 	}
 
 	var metadata map[string]string
 	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to decode metadata: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to decode metadata: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	response := Heartbeat{
-		Secret:   secret,
+		ID:       hbID,
 		Expiry:   expiry,
 		Label:    label,
 		Metadata: metadata,
@@ -221,6 +270,6 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
 	}
 }

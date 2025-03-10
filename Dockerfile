@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS build-stage
+FROM golang:1.24-alpine AS build-stage
 
 WORKDIR /app
 
@@ -21,7 +21,6 @@ RUN apk --no-cache add sqlite ca-certificates
 WORKDIR /app
 
 COPY --from=build-stage /app/heartbeat-collector .
-COPY --from=build-stage /app/heartbeats.db /app/heartbeats.db
 
 EXPOSE 8080 8081
 
