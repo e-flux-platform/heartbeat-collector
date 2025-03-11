@@ -18,7 +18,7 @@ curl -X PUT http://localhost:8181/hb/{id}
 ### Checking an existing heartbeat
 
 ```sh
-curl -X GET http://localhost:8080/hb/{id}?expiry={expiry_in_seconds}
+curl -X GET http://localhost:8080/hb/{id}?ttl={ttl_in_seconds}
 
 {
     "id": "id",
