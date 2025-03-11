@@ -206,15 +206,15 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiryParam := r.URL.Query().Get("expiry")
-	if expiryParam == "" {
-		http.Error(w, "expiry query parameter is required", http.StatusBadRequest)
+	ttl := r.URL.Query().Get("ttl")
+	if ttl == "" {
+		http.Error(w, "ttl query parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	expirySeconds, err := strconv.Atoi(expiryParam)
+	ttlSeconds, err := strconv.Atoi(ttl)
 	if err != nil {
-		http.Error(w, "expiry query parameter must be a valid integer", http.StatusBadRequest)
+		http.Error(w, "ttl query parameter must be a valid integer", http.StatusBadRequest)
 		return
 	}
 
@@ -233,11 +233,11 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	lastUpdatedAt, err := time.Parse(time.RFC3339, lastUpdatedAtStr)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to parse expiry date: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to parse last updated at date: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	expiryTime := lastUpdatedAt.Add(time.Duration(expirySeconds) * time.Second)
+	expiryTime := lastUpdatedAt.Add(time.Duration(ttlSeconds) * time.Second)
 	if time.Now().After(expiryTime) {
 		http.Error(w, "heartbeat expired", http.StatusNotFound)
 		return
