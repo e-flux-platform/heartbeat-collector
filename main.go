@@ -174,13 +174,13 @@ func run(cliCtx *cli.Context) error {
 
 func internalRouter() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /hb/{id}", handlePutHeartbeat)
+	mux.HandleFunc("PUT /{id}", handlePutHeartbeat)
 	return mux
 }
 
 func externalRouter() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hb/{id}", handleGetHeartbeat)
+	mux.HandleFunc("GET /{id}", handleGetHeartbeat)
 	return mux
 }
 
