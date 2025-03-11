@@ -22,6 +22,6 @@ WORKDIR /app
 
 COPY --from=build-stage /app/heartbeat-collector .
 
-EXPOSE 8080 8081
+EXPOSE 8080
 
 ENTRYPOINT ["./heartbeat-collector"]

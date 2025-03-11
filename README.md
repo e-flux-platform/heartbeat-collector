@@ -12,28 +12,22 @@ task run
 ### Creating a heartbeat
 
 ```sh
- curl -X PUT http://localhost:8181/hb/{id} -d '{
-    "expiry": "2025-12-31T23:59:59Z",
-    "label": "example",
-    "metadata": {
-        "k1": "v1",
-        "k2": "v2"
-    }
-}' -H "Content-Type: application/json"
-```
-
-### Reading a heartbeat
-```sh
- curl -X GET  http://localhost:8080/hb/{id}   
+ curl -X GET  http://localhost:8080/{id}?expiry=<NUM_SECONDS>?label=label   
 
 {
     "id":"id",
     "expiry":"2025-12-31T23:59:59Z",
-    "label":"example-label",
-    "metadata":
-        {
-            "k1":"1",
-            "k2":"v2"
-        }
+    "label":"label",
+    }
+```
+
+### Reading a heartbeat
+```sh
+ curl -X GET  http://localhost:8080/{id}   
+
+{
+    "id":"id",
+    "expiry":"2025-12-31T23:59:59Z",
+    "label":"label",
     }
 ```

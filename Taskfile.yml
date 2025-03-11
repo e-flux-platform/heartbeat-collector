@@ -52,12 +52,12 @@ tasks:
     desc: "Run docker container"
     env:
       SQLITE_DSN: ${SQLITE_DSN}
+      PORT_ADDR: ${PORT_ADDR}
     cmds:
       - cmd: |
           docker run -d \
             --name heartbeat-collector \
-            -p 8080:8080 \
-            -p 8081:8081 \
+            -p {{.PORT_ADDR}}:{{.PORT_ADDR}} \
             -v {{.SQLITE_DSN}}:/app/{{.SQLITE_DSN}} \
             heartbeat-collector:latest
 
