@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -26,10 +27,8 @@ type AppConfig struct {
 }
 
 type Heartbeat struct {
-	ID       string            `json:"id"`
-	Expiry   time.Time         `json:"expiry"`
-	Label    string            `json:"label,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	ID            string    `json:"id"`
+	LastUpdatedAt time.Time `json:"last_updated_at"`
 }
 
 var (
@@ -74,7 +73,6 @@ func main() {
 }
 
 func run(cliCtx *cli.Context) error {
-
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -91,9 +89,7 @@ func run(cliCtx *cli.Context) error {
 	_, err = db.Exec(`
         CREATE TABLE IF NOT EXISTS heartbeats (
             id TEXT PRIMARY KEY,
-            expiry DATETIME NOT NULL,
-            label TEXT,
-            metadata TEXT
+            last_updated_at DATETIME NOT NULL
         );
     `)
 	if err != nil {
@@ -138,7 +134,7 @@ func run(cliCtx *cli.Context) error {
 		go func() {
 			<-groupCtx.Done()
 			if err := externalServer.Shutdown(context.Background()); err != nil {
-				log.Printf("failed to shutdown internal server: %v", err)
+				log.Printf("failed to shutdown external server: %v", err)
 			} else {
 				log.Println("external server shutdown")
 			}
@@ -185,37 +181,16 @@ func externalRouter() http.Handler {
 }
 
 func handlePutHeartbeat(w http.ResponseWriter, r *http.Request) {
-
 	hbID := r.PathValue("id")
-
-	var hb Heartbeat
-	if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
-		log.Println(err)
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
 	if hbID == "" {
 		http.Error(w, "ID value is required on path", http.StatusBadRequest)
 		return
 	}
-	if hb.Expiry.IsZero() {
-		http.Error(w, "'expiry' is required and must be RFC3339 compliant", http.StatusBadRequest)
-		return
-	}
 
-	metadataJSON, err := json.Marshal(hb.Metadata)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode metadata: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	hb.ID = hbID
-
-	_, err = db.Exec(`
-       INSERT OR REPLACE INTO heartbeats (id, expiry, label, metadata)
-        VALUES (?, ?, ?, ?);
-    `, hb.ID, hb.Expiry.Format(time.RFC3339), hb.Label, string(metadataJSON))
+	_, err := db.Exec(`
+       INSERT OR REPLACE INTO heartbeats (id, last_updated_at)
+        VALUES (?, ?);
+    `, hbID, time.Now().Format(time.RFC3339))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to store heartbeat: %v", err), http.StatusInternalServerError)
 		return
@@ -231,10 +206,22 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var expiryStr, label, metadataJSON string
-	err := db.QueryRow(`
-        SELECT expiry, label, metadata FROM heartbeats WHERE id = ?
-    `, hbID).Scan(&expiryStr, &label, &metadataJSON)
+	expiryParam := r.URL.Query().Get("expiry")
+	if expiryParam == "" {
+		http.Error(w, "expiry query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	expirySeconds, err := strconv.Atoi(expiryParam)
+	if err != nil {
+		http.Error(w, "expiry query parameter must be a valid integer", http.StatusBadRequest)
+		return
+	}
+
+	var lastUpdatedAtStr string
+	err = db.QueryRow(`
+        SELECT last_updated_at FROM heartbeats WHERE id = ?
+    `, hbID).Scan(&lastUpdatedAtStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "heartbeat not found", http.StatusNotFound)
@@ -244,28 +231,21 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiry, err := time.Parse(time.RFC3339, expiryStr)
+	lastUpdatedAt, err := time.Parse(time.RFC3339, lastUpdatedAtStr)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to parse expiry date: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if time.Now().After(expiry) {
+	expiryTime := lastUpdatedAt.Add(time.Duration(expirySeconds) * time.Second)
+	if time.Now().After(expiryTime) {
 		http.Error(w, "heartbeat expired", http.StatusNotFound)
 		return
 	}
 
-	var metadata map[string]string
-	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-		http.Error(w, fmt.Sprintf("failed to decode metadata: %v", err), http.StatusInternalServerError)
-		return
-	}
-
 	response := Heartbeat{
-		ID:       hbID,
-		Expiry:   expiry,
-		Label:    label,
-		Metadata: metadata,
+		ID:            hbID,
+		LastUpdatedAt: lastUpdatedAt,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
