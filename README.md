@@ -12,28 +12,17 @@ task run
 ### Creating a heartbeat
 
 ```sh
- curl -X PUT http://localhost:8181/hb/{id} -d '{
-    "expiry": "2025-12-31T23:59:59Z",
-    "label": "example",
-    "metadata": {
-        "k1": "v1",
-        "k2": "v2"
-    }
-}' -H "Content-Type: application/json"
+curl -X PUT http://localhost:8181/hb/{id}
 ```
 
-### Reading a heartbeat
+### Checking an existing heartbeat
+Note the ttl query parameter should be specified as a duration (e.g. 1d, 2h, 30s, etc..)
+
 ```sh
- curl -X GET  http://localhost:8080/hb/{id}   
+curl -X GET http://localhost:8080/hb/{id}?ttl={duration}
 
 {
-    "id":"id",
-    "expiry":"2025-12-31T23:59:59Z",
-    "label":"example-label",
-    "metadata":
-        {
-            "k1":"1",
-            "k2":"v2"
-        }
-    }
+    "id": "id",
+    "last_updated_at": "2025-12-31T23:59:59Z"
+}
 ```
