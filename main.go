@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -212,9 +211,9 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttlSeconds, err := strconv.Atoi(ttl)
+	ttlSeconds, err := time.ParseDuration(ttl)
 	if err != nil {
-		http.Error(w, "ttl query parameter must be a valid integer", http.StatusBadRequest)
+		http.Error(w, "ttl query parameter must be a valid duration", http.StatusBadRequest)
 		return
 	}
 
