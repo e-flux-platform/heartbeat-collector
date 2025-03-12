@@ -12,7 +12,7 @@ task run
 ### Creating a heartbeat
 
 ```sh
-curl -X PUT http://localhost:8181/{id}
+curl http://localhost:8181/{id}
 ```
 
 ### Checking an existing heartbeat
