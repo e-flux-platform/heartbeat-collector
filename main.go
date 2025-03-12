@@ -169,7 +169,7 @@ func run(cliCtx *cli.Context) error {
 
 func internalRouter() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /{id}", handlePutHeartbeat)
+	mux.HandleFunc("/{id}", handlePutHeartbeat)
 	return mux
 }
 
