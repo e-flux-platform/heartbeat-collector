@@ -236,7 +236,7 @@ func handleGetHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiryTime := lastUpdatedAt.Add(ttlSeconds * time.Second)
+	expiryTime := lastUpdatedAt.Add(ttlSeconds)
 	if time.Now().After(expiryTime) {
 		http.Error(w, "heartbeat expired", http.StatusNotFound)
 		return
